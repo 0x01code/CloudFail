@@ -204,7 +204,7 @@ def subdomain_scan(target, subdomains):
         subdomainsList = "subdomains.txt"
     try:
         with open("data/" + subdomainsList, "r") as wordlist:
-            numOfLines = len(open("data/subdomains.txt").readlines())
+            numOfLines = len(open(f"data/{subdomainsList}").readlines())
             numOfLinesInt = numOfLines
             numOfLines = str(numOfLines)
             print_out(Fore.CYAN + "Scanning " + numOfLines + " subdomains (" + subdomainsList + "), please wait...")
@@ -257,6 +257,32 @@ def update():
         for chunk in r.iter_content(4000):
             fd.write(chunk)
 
+def download_wordlist():
+    wordlist_url = "https://github.com/danielmiessler/SecLists/raw/refs/heads/master/Discovery/DNS/subdomains-top1million-110000.txt"
+    wordlist_path = "data/seclist/subdomains-top1million-110000.txt"
+    if not os.path.exists('data/seclist'):
+        os.mkdir('data/seclist')
+
+    print_out(Fore.CYAN + "Downloading SecLists subdomain wordlist...")
+    print_out(Fore.CYAN + "URL: " + wordlist_url)
+
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(wordlist_url, headers=headers, stream=True)
+
+        if r.status_code == 200:
+            with open(wordlist_path, 'wb') as fd:
+                for chunk in r.iter_content(4000):
+                    fd.write(chunk)
+            print_out(Fore.GREEN + "Wordlist downloaded successfully to: " + wordlist_path)
+            return "subdomains-top1million-110000.txt"
+        else:
+            print_out(Fore.RED + "Failed to download wordlist. Status code: " + str(r.status_code))
+            return None
+    except Exception as e:
+        print_out(Fore.RED + "Error downloading wordlist: " + str(e))
+        return None
+
 # END FUNCTIONS
 
 logo = """\
@@ -278,8 +304,10 @@ parser.add_argument("-t", "--target", help="target url of website", type=str)
 parser.add_argument("-T", "--tor", dest="tor", action="store_true", help="enable TOR routing")
 parser.add_argument("-u", "--update", dest="update", action="store_true", help="update databases")
 parser.add_argument("-s", "--subdomains", help="name of alternate subdomains list stored in the data directory", type=str)
+parser.add_argument("-d", "--download-wordlist", dest="download_wordlist", action="store_true", help="download SecLists subdomain wordlist (subdomains-top1million-110000.txt)")
 parser.set_defaults(tor=False)
 parser.set_defaults(update=False)
+parser.set_defaults(download_wordlist=False)
 
 args = parser.parse_args()
 
@@ -301,6 +329,11 @@ if args.tor is True:
 if args.update is True:
     update()
 
+# Download wordlist if requested
+downloaded_wordlist = None
+if args.download_wordlist is True:
+    downloaded_wordlist = download_wordlist()
+
 try:
 
     # Initialize CloudFail
@@ -313,7 +346,9 @@ try:
     crimeflare(args.target)
 
     # Scan subdomains with or without TOR
-    subdomain_scan(args.target, args.subdomains)
+    # Use downloaded wordlist if available, otherwise use custom wordlist or default
+    wordlist_to_use = downloaded_wordlist if downloaded_wordlist else args.subdomains
+    subdomain_scan(args.target, wordlist_to_use)
 
 except KeyboardInterrupt:
     sys.exit(0)
