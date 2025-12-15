@@ -9,6 +9,7 @@ import requests
 import re
 import sys
 import base64
+import json
 
 from bs4 import BeautifulSoup
 
@@ -69,13 +70,18 @@ class DNSDumpsterAPI(object):
 
         req = self.session.get(dnsdumpster_url)
         soup = BeautifulSoup(req.content, 'html.parser')
-        csrf_middleware = soup.findAll('input', attrs={'name': 'csrfmiddlewaretoken'})[0]['value']
-        self.display_message('Retrieved token: %s' % csrf_middleware)
 
-        cookies = {'csrftoken': csrf_middleware}
-        headers = {'Referer': dnsdumpster_url, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36'}
-        data = {'csrfmiddlewaretoken': csrf_middleware, 'targetip': domain, 'user': 'free'}
-        req = self.session.post(dnsdumpster_url, cookies=cookies, data=data, headers=headers)
+        dnsdumpster_api = soup.find('form',{'data-form-id':'mainform'})['hx-post']
+        access_token = json.loads(soup.find('form',{'data-form-id':'mainform'})['hx-headers'])['Authorization']
+        self.display_message('Retrieved token: %s' % access_token)
+
+        headers = {
+            'Referer': dnsdumpster_url, 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+            'authorization': access_token
+        }
+        data = {'target': domain}
+        req = self.session.post(dnsdumpster_api, data=data, headers=headers)
 
         if req.status_code != 200:
             print(
