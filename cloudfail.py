@@ -13,6 +13,8 @@ import zipfile
 import os
 import win_inet_pton
 import platform
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from colorama import Fore, Style
 from DNSDumpsterAPI import DNSDumpsterAPI
 import dns.resolver
@@ -86,12 +88,12 @@ def dnsdumpster(target):
 
     res = DNSDumpsterAPI(False).search(target)
 
-    if res['dns_records']['host']:
-        for entry in res['dns_records']['host']:
+    if res['dns_records']['ns']:
+        for entry in res['dns_records']['ns']:
             provider = str(entry['provider'])
             if "Cloudflare" not in provider:
                 print_out(
-                    Style.BRIGHT + Fore.WHITE + "[FOUND:HOST] " + Fore.GREEN + "{domain} {ip} {as} {provider} {country}".format(
+                    Style.BRIGHT + Fore.WHITE + "[FOUND:NS] " + Fore.GREEN + "{domain} {ip} {as} {provider} {country}".format(
                         **entry))
 
     if res['dns_records']['dns']:
@@ -190,9 +192,37 @@ def check_for_wildcard(target):
         #Return False to not return if no wildcard was found
         return False
 
-def subdomain_scan(target, subdomains):
-    i = 0
-    c = 0
+def check_subdomain(word, target, progress_lock, counters):
+    """Worker function to check a single subdomain"""
+    subdomain = "{}.{}".format(word.strip(), target)
+    result = None
+
+    try:
+        target_http = requests.get("http://" + subdomain, timeout=5)
+        target_http = str(target_http.status_code)
+        ip = socket.gethostbyname(subdomain)
+        ifIpIsWithin = inCloudFlare(ip)
+
+        if not ifIpIsWithin:
+            with progress_lock:
+                counters['found'] += 1
+                print_out(
+                    Style.BRIGHT + Fore.WHITE + "[FOUND:SUBDOMAIN] " + Fore.GREEN + subdomain + " IP: " + ip + " HTTP: " + target_http)
+            result = (subdomain, ip, target_http)
+        else:
+            with progress_lock:
+                print_out(
+                    Style.BRIGHT + Fore.WHITE + "[FOUND:SUBDOMAIN] " + Fore.RED + subdomain + " ON CLOUDFLARE NETWORK!")
+
+    except (requests.exceptions.RequestException, socket.gaierror):
+        pass
+
+    with progress_lock:
+        counters['checked'] += 1
+
+    return result
+
+def subdomain_scan(target, subdomains, num_threads=10):
     if check_for_wildcard(target):
         #If has wildcard or input N, return
         print_out(Fore.CYAN + "Scanning finished...")
@@ -202,36 +232,27 @@ def subdomain_scan(target, subdomains):
         subdomainsList = subdomains
     else:
         subdomainsList = "subdomains.txt"
+
     try:
         with open("data/" + subdomainsList, "r") as wordlist:
-            numOfLines = len(open(f"data/{subdomainsList}").readlines())
-            numOfLinesInt = numOfLines
-            numOfLines = str(numOfLines)
-            print_out(Fore.CYAN + "Scanning " + numOfLines + " subdomains (" + subdomainsList + "), please wait...")
-            for word in wordlist:
-                c += 1
-                if (c % int((float(numOfLinesInt) / 100.0))) == 0:
-                    print_out(Fore.CYAN + str(round((c / float(numOfLinesInt)) * 100.0, 2)) + "% complete", '\r')
+            words = wordlist.readlines()
+            numOfLinesInt = len(words)
+            numOfLines = str(numOfLinesInt)
 
-                subdomain = "{}.{}".format(word.strip(), target)
-                try:
-                    target_http = requests.get("http://" + subdomain)
-                    target_http = str(target_http.status_code)
-                    ip = socket.gethostbyname(subdomain)
-                    ifIpIsWithin = inCloudFlare(ip)
+            print_out(Fore.CYAN + "Scanning " + numOfLines + " subdomains (" + subdomainsList + ") with " + str(num_threads) + " threads, please wait...")
 
-                    if not ifIpIsWithin:
-                        i += 1
-                        print_out(
-                            Style.BRIGHT + Fore.WHITE + "[FOUND:SUBDOMAIN] " + Fore.GREEN + subdomain + " IP: " + ip + " HTTP: " + target_http)
-                    else:
-                        print_out(
-                            Style.BRIGHT + Fore.WHITE + "[FOUND:SUBDOMAIN] " + Fore.RED + subdomain + " ON CLOUDFLARE NETWORK!")
-                        continue
+            progress_lock = threading.Lock()
+            counters = {'checked': 0, 'found': 0}
 
-                except requests.exceptions.RequestException as e:
-                    continue
-            if (i == 0):
+            with ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = {executor.submit(check_subdomain, word, target, progress_lock, counters): word for word in words}
+
+                for future in as_completed(futures):
+                    if counters['checked'] % int(max(float(numOfLinesInt) / 100.0, 1)) == 0:
+                        with progress_lock:
+                            print_out(Fore.CYAN + str(round((counters['checked'] / float(numOfLinesInt)) * 100.0, 2)) + "% complete", '\r')
+
+            if counters['found'] == 0:
                 print_out(Fore.CYAN + "Scanning finished, we did not find anything, sorry...")
             else:
                 print_out(Fore.CYAN + "Scanning finished...")
@@ -275,7 +296,7 @@ def download_wordlist():
                 for chunk in r.iter_content(4000):
                     fd.write(chunk)
             print_out(Fore.GREEN + "Wordlist downloaded successfully to: " + wordlist_path)
-            return "subdomains-top1million-110000.txt"
+            return "seclist/subdomains-top1million-110000.txt"
         else:
             print_out(Fore.RED + "Failed to download wordlist. Status code: " + str(r.status_code))
             return None
@@ -300,11 +321,12 @@ datestr = str(datetime.datetime.strftime(datetime.datetime.now(), '%d/%m/%Y'))
 print_out("Initializing CloudFail - the date is: " + datestr)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-t", "--target", help="target url of website", type=str)
-parser.add_argument("-T", "--tor", dest="tor", action="store_true", help="enable TOR routing")
+parser.add_argument("target", nargs="?", help="target domain of website", type=str)
+parser.add_argument("--tor", dest="tor", action="store_true", help="enable TOR routing")
 parser.add_argument("-u", "--update", dest="update", action="store_true", help="update databases")
-parser.add_argument("-s", "--subdomains", help="name of alternate subdomains list stored in the data directory", type=str)
+parser.add_argument("-w", "--subdomains", help="name of alternate subdomains list stored in the data directory", type=str)
 parser.add_argument("-d", "--download-wordlist", dest="download_wordlist", action="store_true", help="download SecLists subdomain wordlist (subdomains-top1million-110000.txt)")
+parser.add_argument("-t", "--threads", dest="threads", type=int, default=10, help="number of threads to use for subdomain scanning (default: 10)")
 parser.set_defaults(tor=False)
 parser.set_defaults(update=False)
 parser.set_defaults(download_wordlist=False)
@@ -348,7 +370,7 @@ try:
     # Scan subdomains with or without TOR
     # Use downloaded wordlist if available, otherwise use custom wordlist or default
     wordlist_to_use = downloaded_wordlist if downloaded_wordlist else args.subdomains
-    subdomain_scan(args.target, wordlist_to_use)
+    subdomain_scan(args.target, wordlist_to_use, args.threads)
 
 except KeyboardInterrupt:
     sys.exit(0)

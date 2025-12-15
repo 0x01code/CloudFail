@@ -31,9 +31,9 @@ class DNSDumpsterAPI(object):
 
     def retrieve_results(self, table):
         res = []
-        trs = table.findAll('tr')
+        trs = table.find_all('tr')
         for tr in trs:
-            tds = tr.findAll('td')
+            tds = tr.find_all('td')
             pattern_ip = r'([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})'
             try:
                 ip = re.findall(pattern_ip, tds[1].text)[0]
@@ -60,7 +60,7 @@ class DNSDumpsterAPI(object):
 
     def retrieve_txt_record(self, table):
         res = []
-        for td in table.findAll('td'):
+        for td in table.find_all('td'):
             res.append(td.text)
         return res
 
@@ -96,15 +96,16 @@ class DNSDumpsterAPI(object):
             return []
 
         soup = BeautifulSoup(req.content, 'html.parser')
-        tables = soup.findAll('table')
 
-        res = {}
-        res['domain'] = domain
-        res['dns_records'] = {}
-        res['dns_records']['dns'] = self.retrieve_results(tables[0])
-        res['dns_records']['mx'] = self.retrieve_results(tables[1])
-        res['dns_records']['txt'] = self.retrieve_txt_record(tables[2])
-        res['dns_records']['host'] = self.retrieve_results(tables[3])
+        res = {
+            'domain': domain,
+            'dns_records': {
+                'dns': self.retrieve_results(soup.find('p', string='A Records (subdomains from dataset)').find_next('table')),
+                'mx': self.retrieve_results(soup.find('p', string='MX Records').find_next('table')),
+                'ns': self.retrieve_results(soup.find('p', string='NS Records').find_next('table')),
+                'txt': self.retrieve_txt_record(soup.find('p', string='TXT Records').find_next('table'))
+            }
+        }
 
         # Network mapping image
         try:
